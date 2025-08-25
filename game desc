@@ -1,0 +1,68 @@
+Perfect 👍
+Here’s a **summary of your game so far** — you can show this to another chat so they know the current state without needing the full code:
+
+---
+
+## 🕹️ Current Game Features (Runner Game with Zombies)
+
+### 🎮 Player
+
+* Sprite-based character (`spritesheet_grant_running.png`) with **12 frames** of animation.
+* Can **jump twice** (double jump).
+* Has **slow fall** ability (when holding Space after max jumps).
+* Frame rate slowed so animation looks smoother, not jittery.
+
+### 🧟 Zombies
+
+* Sprite-based zombies (`zomby.png`) with **6-frame animation**.
+* Spawn randomly, alternating with holes.
+* Zombies **grow bigger** with each spawn to increase difficulty.
+* Can be destroyed if hit by a ball.
+
+### 🕳️ Holes
+
+* Three types: small, medium, large.
+* Player dies if they fall in (collision only when actually centered over the hole, not too early).
+
+### 🔴 Balls / Ammo
+
+* Player starts with **5 balls**.
+* Two throw modes:
+
+  * **ENTER** → straight shot
+  * **SHIFT + ENTER** → bouncing shot (affected by gravity & ground bounces).
+* Balls **destroy zombies** on collision.
+* Ammo decreases but currently **doesn’t refill yet** (that’s the next feature we’re fixing).
+
+### 🌤️ Environment
+
+* Moving clouds in the background.
+* Green ground.
+* Darkness effect: screen slowly darkens over time; moving forward (Arrow →) accelerates it. If it becomes fully dark → game over.
+
+### 🏠 Win / Lose
+
+* **Score system**:
+
+  * Passing holes & zombies gives points.
+  * Winning score = **1000 points**.
+* On win → shows a cute **house image** with a congratulations message.
+* On loss → “Game Over” screen with restart option.
+
+### ⚡ Controls
+
+* **SPACE** = jump (up to 2 jumps).
+* **Arrow →** = sprint forward (but increases darkness faster).
+* **ENTER** = throw ball.
+* **SHIFT + ENTER** = bouncing ball throw.
+* **SPACE on Game Over/Win screen** = restart game.
+
+---
+
+👉 Next unfinished feature:
+
+* **Ammo refill system** (either automatic after cooldown, or collectable items).
+
+---
+
+Would you like me to also write a **clean “feature roadmap”** (with TODOs like “Add ammo refill, Add sound effects, Add levels” etc.) so the next chat can pick it up more easily?

@@ -1,0 +1,966 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Runner Game with Zombies</title>
+<style>
+  body { margin: 0; overflow: hidden; background: skyblue; }
+  canvas { display: block; }
+  
+  /* Mute buttons styling */
+  .mute-buttons {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  
+  .mute-btn {
+    padding: 8px 16px;
+    border: 2px solid #333;
+    border-radius: 20px;
+    background: rgba(255, 255, 255, 0.9);
+    cursor: pointer;
+    font-family: Arial, sans-serif;
+    font-size: 14px;
+    font-weight: bold;
+    transition: all 0.3s ease;
+  }
+  
+  .mute-btn:hover {
+    background: rgba(255, 255, 255, 1);
+    transform: scale(1.05);
+  }
+  
+  .mute-btn.muted {
+    background: rgba(255, 100, 100, 0.9);
+    color: white;
+  }
+  
+  .mute-btn.fullscreen {
+    background: rgba(205, 220, 255, 0.9);
+    color: white;
+  }
+
+  /* Mobile controls */
+  .mobile-controls { position: fixed; z-index: 1001; pointer-events: none; }
+  .mobile-btn { pointer-events: auto; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; padding: 14px 18px; border: 2px solid #333; border-radius: 16px; background: rgba(255,255,255,0.85); font-family: Arial, sans-serif; font-size: 16px; font-weight: bold; box-shadow: 0 2px 6px rgba(0,0,0,0.25); }
+  .mobile-btn:active { transform: scale(0.98); }
+  .mobile-left { left: 16px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; gap: 8px; }
+  .mobile-right { right: 16px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; gap: 8px; }
+  .mobile-bottom { left: 50%; bottom: 16px; transform: translateX(-50%); display: flex; gap: 12px; }
+  @media (min-width: 901px) { .mobile-controls { display: none; } }
+</style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+<script>
+// Detect mobile/tablet
+function isMobileDevice(){
+  const ua = navigator.userAgent || navigator.vendor || window.opera;
+  const touchCapable = ("ontouchstart" in window) || navigator.maxTouchPoints > 0 || navigator.msMaxTouchPoints > 0;
+  const smallScreen = window.innerWidth <= 900;
+  return (/android|iphone|ipad|ipod|iemobile|mobile|tablet/i.test(ua) && touchCapable) || smallScreen;
+}
+
+// UI scale for mobile sizing
+let uiScale = isMobileDevice() ? 2 : 1;
+
+// Create/Destroy mobile controls on demand
+function mobileControlsExist(){return document.querySelector('.mobile-controls')!==null;}
+function createMobileControls(){
+  if(!isMobileDevice()||mobileControlsExist()) return;
+  // Left (Run)
+  const left = document.createElement('div');
+  left.className = 'mobile-controls mobile-left';
+  const runBtn = document.createElement('button');
+  runBtn.className = 'mobile-btn';
+  runBtn.textContent = 'Run';
+  left.appendChild(runBtn);
+  document.body.appendChild(left);
+
+  // Right (Jump)
+  const right = document.createElement('div');
+  right.className = 'mobile-controls mobile-right';
+  const jumpBtn = document.createElement('button');
+  jumpBtn.className = 'mobile-btn';
+  jumpBtn.textContent = 'Jump';
+  right.appendChild(jumpBtn);
+  document.body.appendChild(right);
+
+  // Bottom (Throws)
+  const bottom = document.createElement('div');
+  bottom.className = 'mobile-controls mobile-bottom';
+  const straightBtn = document.createElement('button');
+  straightBtn.className = 'mobile-btn';
+  straightBtn.textContent = 'Throw';
+  const bounceBtn = document.createElement('button');
+  bounceBtn.className = 'mobile-btn';
+  bounceBtn.textContent = 'Bounce';
+  bottom.appendChild(straightBtn);
+  bottom.appendChild(bounceBtn);
+  document.body.appendChild(bottom);
+
+  // Helpers to prevent scroll/zoom
+  const prevent = (e)=>{ e.preventDefault(); e.stopPropagation(); };
+
+  // Run: hold to sprint
+  runBtn.addEventListener('touchstart', (e)=>{ prevent(e); forwardPressed=true; }, {passive:false});
+  runBtn.addEventListener('touchend', (e)=>{ prevent(e); forwardPressed=false; }, {passive:false});
+  runBtn.addEventListener('touchcancel', (e)=>{ prevent(e); forwardPressed=false; }, {passive:false});
+
+  // Jump: tap to jump or restart
+  jumpBtn.addEventListener('touchstart', (e)=>{
+    prevent(e);
+    if(gameOver||gameWon){ resetGame(); return; }
+    if(player.jumps<player.maxJumps){ player.dy=player.jumpPower; player.jumps++; playSound && playSound('jump'); }
+  }, {passive:false});
+
+  // Throw straight
+  straightBtn.addEventListener('touchstart', (e)=>{ prevent(e); if(!gameOver&&!gameWon) throwBall(false); }, {passive:false});
+  // Throw bouncing
+  bounceBtn.addEventListener('touchstart', (e)=>{ prevent(e); if(!gameOver&&!gameWon) throwBall(true); }, {passive:false});
+}
+function destroyMobileControls(){document.querySelectorAll('.mobile-controls').forEach(el=>el.remove());}
+
+// Ensure controls reflect current device width
+function ensureMobileControls(){
+  const wantMobile = isMobileDevice();
+  if(wantMobile && !mobileControlsExist()) createMobileControls();
+  if(!wantMobile && mobileControlsExist()) destroyMobileControls();
+}
+
+document.addEventListener('DOMContentLoaded', ()=>{ createMobileControls(); ensureMobileControls(); setTimeout(ensureMobileControls, 150); });
+const canvas = document.getElementById("gameCanvas");
+const ctx = canvas.getContext("2d");
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+
+const groundHeight = 100;
+
+// ---------------- PLAYER ----------------
+const playerImage = new Image();
+playerImage.src = "spritesheet_grant_running.png";
+const playerFrameWidth = 166;
+const playerFrameHeight = 280;
+const playerTotalFrames = 12;
+let playerCurrentFrame = 0;
+let lastFrameTime = 0;
+const frameDuration = 80; // ms per frame
+let isJumping = false;
+
+const player = {
+  x: 100,
+  y: canvas.height - groundHeight - 200,
+  width: 100,
+  height: 180,
+  dy: 0,
+  gravity: 1,
+  jumpPower: -15,
+  jumps: 0,
+  maxJumps: 2,
+  slowFall: false,
+  isFalling: false, // Add falling state
+  fallSpeed: 0 // Add fall speed for hole animation
+};
+
+// ---------------- OTHER IMAGES ----------------
+const homeImage = new Image();
+homeImage.src = "ai-generated-cute-house-in-cartoon-style-png.webp";
+const holeImage = new Image();
+holeImage.src = "hole.png";
+const zombieImage = new Image();
+zombieImage.src = "zomby.png"; 
+const grassImage = new Image();
+grassImage.src = "images/grass/grass.png";
+const lanternImage = new Image();
+lanternImage.src = "images/lantern/lantern.png";
+const zombieFrameWidth = 80;
+const zombieFrameHeight = 96;
+const zombieTotalFrames = 6;
+const zombieAspect = zombieFrameWidth / zombieFrameHeight;
+
+// ---------------- TREE IMAGES ----------------
+const treeImages = [];
+let treesLoaded = 0;
+for (let i = 1; i <= 3; i++) {
+  const treeImg = new Image();
+  treeImg.onload = () => {
+    treesLoaded++;
+    console.log(`Tree ${i} loaded, total loaded: ${treesLoaded}`);
+    if (treesLoaded === 3 && playerImage.complete) {
+      console.log("All images loaded, starting game");
+      requestAnimationFrame(gameLoop);
+    }
+  };
+  treeImg.onerror = () => {
+    console.error(`Failed to load tree ${i}`);
+  };
+  treeImg.src = `images/trees/tree${i}.png`;
+  treeImages.push(treeImg);
+}
+
+// Initialize ground terrain
+
+// ---------------- GAME STATE ----------------
+let holes = [];
+let zombies = [];
+let balls = [];
+let ammoPickups = [];
+let trees = []; // Add trees array
+let lanterns = []; // Add lanterns array
+let grassOffset = 0; // Add grass scrolling offset
+let frame = 0;
+let gameOver = false;
+let gameWon = false;
+let score = 0;
+let zombieSizeIncrease = 0;
+let baseSpeed = 6;
+let speed = baseSpeed;
+let forwardPressed = false;
+let spacePressed = false;
+let darkness = 0;
+let darknessRate = 0.0004;
+const WIN_SCORE = 1000;
+
+// ---------------- OBSTACLE TYPES ----------------
+const holeTypes = [{width:80, points:10},{width:140, points:20},{width:200, points:30}];
+const zombieTypes = [{height:70,width:Math.round(70*zombieAspect),points:25},{height:100,width:Math.round(100*zombieAspect),points:50}];
+
+// ---------------- CLOUDS ----------------
+let clouds = [];
+for(let i=0;i<5;i++){
+  clouds.push({x:Math.random()*canvas.width,y:Math.random()*(canvas.height/3),radius:40+Math.random()*30,speed:1+Math.random()*0.5});
+}
+
+// ---------------- SUN & MOON ----------------
+let sunX = canvas.width - 100;
+let sunY = 100;
+let moonX = -100;
+let moonY = 100;
+
+// ---------------- BALLS ----------------
+let ammo = 5;
+const ballSpeed = 10;
+const ballRadius = 8;
+function throwBall(bouncing=false){
+  if(ammo>0){
+    const sz=getPlayerSize();
+    const startY = player.y + sz.height * (isMobileDevice()? 0.70 : 0.50); // lower throw on mobile so it hits zombies
+    balls.push({x:player.x+sz.width, y:startY, dx:ballSpeed, dy:bouncing?-8:0, bouncing:bouncing});
+    ammo--;
+  }
+}
+
+// ---------------- SPAWN AMMO ----------------
+const ammoPickupRadius = 15;
+function spawnAmmoPickup(){ammoPickups.push({x:canvas.width+50,y:canvas.height-groundHeight-200,baseY:canvas.height-groundHeight-200,angle:0});}
+
+// ---------------- UTILS ----------------
+function randInt(min,max){return Math.floor(Math.random()*(max-min+1))+min;}
+
+// ---------------- DRAW FUNCTIONS ----------------
+function drawClouds(){
+  ctx.fillStyle="white";
+  clouds.forEach(cloud=>{
+    ctx.beginPath();
+    ctx.arc(cloud.x,cloud.y,cloud.radius,0,Math.PI*2);
+    ctx.arc(cloud.x+cloud.radius,cloud.y+10,cloud.radius*0.8,0,Math.PI*2);
+    ctx.arc(cloud.x-cloud.radius,cloud.y+10,cloud.radius*0.8,0,Math.PI*2);
+    ctx.fill();
+    cloud.x-=cloud.speed;
+    if(cloud.x<-cloud.radius*2){cloud.x=canvas.width+cloud.radius; cloud.y=Math.random()*(canvas.height/3);}
+  });
+}
+
+function drawGround(){
+  // Base green background only (no holes)
+  ctx.fillStyle="darkgreen";
+  ctx.fillRect(0,canvas.height-groundHeight,canvas.width,groundHeight);
+}
+
+function drawGrass(){
+  // Draw grass.png on top of everything with smaller height
+  if (grassImage.complete) {
+    const grassWidth = grassImage.width;
+    const grassHeight = 40; // Smaller grass height
+    
+    // Calculate how many grass tiles we need to cover the width + extra for smooth scrolling
+    const tilesNeeded = Math.ceil(canvas.width / grassWidth) + 2;
+    
+    for (let i = 0; i < tilesNeeded; i++) {
+      ctx.drawImage(
+        grassImage, 
+        (i * grassWidth) - (grassOffset % grassWidth), 
+        canvas.height - groundHeight - grassHeight, 
+        grassWidth, 
+        grassHeight
+      );
+    }
+  }
+}
+
+function drawPlayer(timestamp){
+  // Always animate the player, regardless of jumping state
+  if(!lastFrameTime) lastFrameTime=timestamp;
+  if(timestamp-lastFrameTime>frameDuration){
+    playerCurrentFrame=(playerCurrentFrame+1)%playerTotalFrames; 
+    lastFrameTime=timestamp;
+  }
+  
+  // Use specific frame for jumping/falling, otherwise use current animation frame
+  let frameToUse = (isJumping || player.isFalling) ? 8 : playerCurrentFrame;
+  const sz=getPlayerSize();
+  ctx.drawImage(playerImage,frameToUse*playerFrameWidth,0,playerFrameWidth,playerFrameHeight,player.x,player.y,sz.width,sz.height);
+}
+
+function drawZombies(){
+  zombies.forEach(z=>{
+    ctx.drawImage(zombieImage,z.currentFrame*zombieFrameWidth,0,zombieFrameWidth,zombieFrameHeight,z.x,canvas.height-groundHeight-z.height,z.width,z.height);
+    z.frameCounter++;
+    if(z.frameCounter%6===0) z.currentFrame=(z.currentFrame+1)%zombieTotalFrames;
+  });
+}
+
+function drawBalls(){
+  ctx.fillStyle="red";
+  balls.forEach(b=>{ctx.beginPath();ctx.arc(b.x,b.y,ballRadius,0,Math.PI*2);ctx.fill();});
+}
+
+function drawAmmoPickups(){
+  ctx.fillStyle="gold";
+  ammoPickups.forEach(p=>{
+    ctx.beginPath();ctx.arc(p.x,p.y,ammoPickupRadius,0,Math.PI*2);ctx.fill();ctx.strokeStyle="orange";ctx.stroke();
+  });
+}
+
+function drawLanterns(){
+  lanterns.forEach(lantern=>{
+    ctx.drawImage(lanternImage, lantern.x, lantern.y, lantern.width, lantern.height);
+  });
+}
+
+function drawScore(){
+  ctx.fillStyle="black";
+  ctx.font="30px Arial";
+  ctx.fillText("Score: "+score,20,40);
+  ctx.fillText("Ammo: "+ammo,20,80);
+}
+
+function drawDarkness(){
+  const rate = forwardPressed ? darknessRate*2 : darknessRate;
+  darkness=Math.min(1,darkness+rate);
+  ctx.fillStyle=`rgba(0,0,0,${darkness})`;
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+  if(darkness>=1 && !gameOver && !gameWon) gameOver=true;
+}
+
+function drawSunMoon(){
+  sunX-=0.05; moonX+=0.05;
+  ctx.beginPath(); ctx.arc(sunX,sunY,50,0,Math.PI*2); ctx.fillStyle="yellow"; ctx.fill();
+  ctx.beginPath(); ctx.arc(moonX,moonY,40,0,Math.PI*2); ctx.fillStyle="lightgray"; ctx.fill();
+}
+
+function drawTrees(){
+  console.log(`Drawing ${trees.length} trees`);
+  trees.forEach((tree, index) => {
+    console.log(`Drawing tree ${index}: x=${tree.x}, y=${tree.y}, type=${tree.type}`);
+    ctx.drawImage(treeImages[tree.type], tree.x, tree.y, tree.width, tree.height);
+  });
+}
+
+// ---------------- UPDATE FUNCTIONS ----------------
+function updatePlayer(){
+  // If player is falling into a hole, handle that animation
+  if (player.isFalling) {
+    player.fallSpeed += 0.5; // Increase fall speed
+    player.y += player.fallSpeed;
+    
+    // If player is completely off screen, trigger game over
+    if (player.y > canvas.height + player.height) {
+      gameOver = true;
+      sounds.gameBg.pause(); // Stop background music
+      sounds.gameBg.currentTime = 0; // Reset music to start
+    }
+    return; // Don't process normal physics while falling
+  }
+  
+  player.y+=player.dy;
+  player.dy+=player.slowFall?player.gravity*0.2:player.gravity;
+  
+  // Check if player is on ground
+  if(player.y>=canvas.height-groundHeight-player.height){
+    player.y=canvas.height-groundHeight-player.height; 
+    player.dy=0; 
+    player.jumps=0; 
+    isJumping=false;
+  } else {
+    isJumping=true;
+  }
+}
+
+function updateHoles(){holes.forEach(h=>h.x-=speed); if(holes.length && holes[0].x+holes[0].width<0){score+=holes[0].points; holes.shift(); if(score>=WIN_SCORE) {gameWon=true; playSound('happyEnding'); sounds.gameBg.pause(); sounds.gameBg.currentTime=0;}}}
+
+function updateZombies(){zombies.forEach(z=>z.x-=speed); if(zombies.length && zombies[0].x+zombies[0].width<0){score+=zombies[0].points; zombies.shift(); if(score>=WIN_SCORE) {gameWon=true; playSound('happyEnding'); sounds.gameBg.pause(); sounds.gameBg.currentTime=0;}}}
+
+function updateBalls(){for(let i=balls.length-1;i>=0;i--){let b=balls[i];b.x+=b.dx; if(b.bouncing){b.y+=b.dy;b.dy+=0.5;if(b.y+ballRadius>canvas.height-groundHeight){b.y=canvas.height-groundHeight-ballRadius;b.dy*=-0.7;}} if(b.x>canvas.width) balls.splice(i,1);}}
+
+function updateAmmoPickups(){for(let i=ammoPickups.length-1;i>=0;i--){let p=ammoPickups[i]; p.x-=speed; p.angle+=0.05; p.y=p.baseY+Math.sin(p.angle)*20; if(player.x<p.x+ammoPickupRadius&&player.x+player.width>p.x-ammoPickupRadius&&player.y<p.y+ammoPickupRadius&&player.y+player.height>p.y-ammoPickupRadius){ammo+=3;ammoPickups.splice(i,1);} if(p.x+ammoPickupRadius<0) ammoPickups.splice(i,1);}}
+
+function updateLanterns(){
+  for(let i=lanterns.length-1;i>=0;i--){
+    let lantern=lanterns[i]; 
+    lantern.x-=speed; 
+    lantern.angle+=0.05; 
+    lantern.y=lantern.baseY+Math.sin(lantern.angle)*15;
+    
+    // Check collision with player
+    if(player.x<lantern.x+lantern.width&&player.x+player.width>lantern.x&&player.y<lantern.y+lantern.height&&player.y+player.height>lantern.y){
+      // Reduce darkness to 50%
+      darkness = Math.max(0, darkness * 0.5);
+      lanterns.splice(i,1);
+    }
+    
+    // Remove if off screen
+    if(lantern.x+lantern.width<0) lanterns.splice(i,1);
+  }
+}
+
+function updateTrees(){trees.forEach(tree=>tree.x-=speed); if(trees.length && trees[0].x+trees[0].width<0) trees.shift();}
+
+function checkCollision(){
+  holes.forEach(h=>{
+    const px=player.x+player.width/2;
+    if(px>h.x+10 && px<h.x+h.width-10 && player.y+player.height>=canvas.height-groundHeight && !player.isFalling) {
+      // Player fell into a hole - start falling animation
+      player.isFalling = true;
+      player.fallSpeed = 0;
+      player.dy = 0; // Stop any existing movement
+      playSound('fall'); // Play fall sound
+    }
+  });
+  
+  zombies.forEach(z=>{
+    // Create tighter hitboxes for more accurate collision detection
+    // Player hitbox (remove empty space around sprite)
+    const playerHitbox = {
+      x: player.x + player.width * 0.2, // Remove 20% from left
+      y: player.y + player.height * 0.1, // Remove 10% from top
+      width: player.width * 0.6, // Use only 60% of width (center portion)
+      height: player.height * 0.8 // Use only 80% of height (center portion)
+    };
+    
+    // Zombie hitbox (remove empty space around sprite)
+    const zombieHitbox = {
+      x: z.x + z.width * 0.15, // Remove 15% from left
+      y: canvas.height - groundHeight - z.height + z.height * 0.1, // Remove 10% from top
+      width: z.width * 0.7, // Use only 70% of width (center portion)
+      height: z.height * 0.8 // Use only 80% of height (center portion)
+    };
+    
+    // Check collision with tighter hitboxes
+    if (playerHitbox.x < zombieHitbox.x + zombieHitbox.width &&
+        playerHitbox.x + playerHitbox.width > zombieHitbox.x &&
+        playerHitbox.y < zombieHitbox.y + zombieHitbox.height &&
+        playerHitbox.y + playerHitbox.height > zombieHitbox.y &&
+        !player.isFalling) {
+      gameOver = true;
+      playSound('gameOver'); // Play game over sound
+      sounds.gameBg.pause(); // Stop background music
+      sounds.gameBg.currentTime = 0; // Reset music to start
+    }
+  });
+}
+
+function checkBallZombieCollision(){
+  for(let i=balls.length-1;i>=0;i--){
+    for(let j=zombies.length-1;j>=0;j--){
+      let b=balls[i], z=zombies[j]; 
+      
+      // Use the same tighter zombie hitbox for ball collision
+      const zombieHitbox = {
+        x: z.x + z.width * 0.15,
+        y: canvas.height - groundHeight - z.height + z.height * 0.1,
+        width: z.width * 0.7,
+        height: z.height * 0.8
+      };
+      
+      if(b.x+ballRadius>zombieHitbox.x && 
+         b.x-ballRadius<zombieHitbox.x+zombieHitbox.width && 
+         b.y+ballRadius>zombieHitbox.y && 
+         b.y-ballRadius<zombieHitbox.y+zombieHitbox.height){
+        zombies.splice(j,1);
+        balls.splice(i,1);
+        playSound('kill'); // Play kill sound
+        break;
+      }
+    }
+  }
+}
+
+// ---------------- SPAWN ----------------
+let MIN_GAP_PX=500, MAX_GAP_PX=900, nextSpawnDistance=randInt(MIN_GAP_PX,MAX_GAP_PX), lastType=null, HOLE_PROB=0.35;
+function maybeSpawnObstacle(){
+  nextSpawnDistance-=speed;
+  if(nextSpawnDistance>0) return;
+  let spawnType;
+  if(lastType==="hole") spawnType="zombie";
+  else if(lastType==="zombie") spawnType=Math.random()<HOLE_PROB?"hole":"zombie";
+  else spawnType=Math.random()<HOLE_PROB?"hole":"zombie";
+
+  if(spawnType==="hole"){const t=holeTypes[Math.floor(Math.random()*holeTypes.length)]; holes.push({x:canvas.width,width:t.width,points:t.points});}
+  else{const t=zombieTypes[Math.floor(Math.random()*zombieTypes.length)]; zombieSizeIncrease+=5; zombies.push({x:canvas.width,width:t.width+zombieSizeIncrease,height:t.height+zombieSizeIncrease,points:t.points,currentFrame:Math.floor(Math.random()*zombieTotalFrames),frameCounter:0});}
+  lastType=spawnType; nextSpawnDistance=randInt(MIN_GAP_PX,MAX_GAP_PX);
+}
+
+// ---------------- TREE SPAWNING ----------------
+let nextTreeSpawnDistance = randInt(800, 1500);
+function maybeSpawnTrees() {
+  nextTreeSpawnDistance -= speed;
+  if (nextTreeSpawnDistance > 0) return;
+  
+  // Randomly decide how many trees to spawn (1-3)
+  const treeCount = Math.floor(Math.random() * 3) + 1;
+  console.log(`Spawning ${treeCount} trees`);
+  
+  for (let i = 0; i < treeCount; i++) {
+    const treeType = Math.floor(Math.random() * treeImages.length);
+    const treeWidth = 200 + Math.random() * 100; // Random width between 200-300
+    const treeHeight = 300 + Math.random() * 50; // Random height between 300-350
+    const xOffset = i * (treeWidth * 0.7); // Trees slightly overlap
+    
+    trees.push({
+      x: canvas.width + xOffset,
+      y: canvas.height - groundHeight - treeHeight,
+      width: treeWidth,
+      height: treeHeight,
+      type: treeType
+    });
+  }
+  
+  console.log(`Total trees: ${trees.length}`);
+  nextTreeSpawnDistance = randInt(800, 1500);
+}
+
+// ---------------- LANTERN SPAWNING ----------------
+let nextLanternSpawnDistance = randInt(3000, 5000); // Much less frequent than ammo
+function maybeSpawnLantern() {
+  nextLanternSpawnDistance -= speed;
+  if (nextLanternSpawnDistance > 0) return;
+  
+  // Spawn a single lantern
+  const lanternWidth = 40;
+  const lanternHeight = 60;
+  
+  lanterns.push({
+    x: canvas.width + 50,
+    y: canvas.height - groundHeight - 200,
+    baseY: canvas.height - groundHeight - 200,
+    width: lanternWidth,
+    height: lanternHeight,
+    angle: 0
+  });
+  
+  console.log("Spawning lantern");
+  nextLanternSpawnDistance = randInt(3000, 5000); // Much less frequent than ammo pickups
+}
+
+// ---------------- RESET ----------------
+function resetGame(){
+  holes=[]; zombies=[]; balls=[]; ammoPickups=[]; trees=[]; lanterns=[]; grassOffset=0; ammo=5; zombieSizeIncrease=0; frame=0; score=0; baseSpeed=6; speed=baseSpeed; gameOver=false; gameWon=false; darkness=0; showIntro=true; setTimeout(()=>{showIntro=false;},3000); player.y=canvas.height-groundHeight-player.height; player.dy=0; player.jumps=0; player.slowFall=false; player.isFalling=false; player.fallSpeed=0; nextSpawnDistance=randInt(MIN_GAP_PX,MAX_GAP_PX); nextTreeSpawnDistance=randInt(800,1500); nextLanternSpawnDistance=randInt(3000,5000); initSounds(); sounds.happyEnding.pause(); sounds.happyEnding.currentTime=0; if(musicEnabled) playSound('gameBg'); requestAnimationFrame(gameLoop);
+}
+
+// ---------------- CONTROLS ----------------
+window.addEventListener("keydown", e=>{
+  if(e.code==="Space"){
+    spacePressed=true; 
+    if(gameOver||gameWon) resetGame(); 
+    else if(player.jumps<player.maxJumps){
+      player.dy=player.jumpPower; 
+      player.jumps++;
+      playSound('jump'); // Play jump sound
+    }
+  }
+  if(e.code==="Enter"&&!gameOver&&!gameWon) throwBall(e.shiftKey);
+  if(e.code==="ArrowRight"&&!gameOver&&!gameWon) forwardPressed=true;
+  
+  // Sound control shortcuts
+  if(e.code==="KeyM") toggleMusic(); // M key to toggle music
+  if(e.code==="KeyS") toggleSound(); // S key to toggle sound effects
+  if(e.code==="KeyF") toggleFullscreen(); // F key to toggle fullscreen
+});
+
+window.addEventListener("keyup", e=>{if(e.code==="Space"){spacePressed=false; player.slowFall=false;} if(e.code==="ArrowRight") forwardPressed=false;});
+
+setInterval(()=>{player.slowFall=(spacePressed && player.jumps>=player.maxJumps && player.y<canvas.height-groundHeight-player.height);},20);
+
+// ---------------- INTRO ----------------
+let showIntro=true;
+setTimeout(()=>{showIntro=false;},3000);
+let showTip=true; // desktop tip visibility
+setTimeout(()=>{showTip=false;},3000);
+function drawIntro(){if(!showIntro) return; ctx.fillStyle="black"; ctx.font="28px Arial"; ctx.fillText("Avoid holes, zombies & collect ammo!", canvas.width/2-300, canvas.height/2-250); ctx.fillText("ENTER = straight shot | SHIFT+ENTER = bouncing shot", canvas.width/2-400, canvas.height/2-200); drawDesktopTip();}
+
+// Apply mobile scaling factors
+function applyMobileScale(){
+  const m = isMobileDevice() ? 2 : 1;
+  uiScale = m;
+  // scale ground visual only; keep grass trim height constant so it sits at the top edge
+  scaledGroundHeight = groundHeight * m;
+  scaledGrassHeight = 40; // do not scale grass height so it stays as a top trim
+  scaledBallRadius = ballRadius * m;
+}
+let scaledGroundHeight = groundHeight;
+let scaledGrassHeight = 40;
+let scaledBallRadius = ballRadius;
+applyMobileScale();
+
+// Update on resize as well
+window.addEventListener('resize', applyMobileScale);
+window.addEventListener('orientationchange', function(){ uiScale = isMobileDevice() ? 2 : 1; applyMobileScale(); ensureMobileControls(); });
+
+// Helper: get scaled player size for current device
+function getPlayerSize(){ return { width: player.width * uiScale, height: player.height * uiScale }; }
+
+// Update ground draw to use scaledGroundHeight
+function drawGround(){
+  ctx.fillStyle="darkgreen";
+  ctx.fillRect(0,canvas.height-scaledGroundHeight,canvas.width,scaledGroundHeight);
+}
+
+// Draw player using scaled size
+function drawPlayer(timestamp){
+  if(!lastFrameTime) lastFrameTime=timestamp;
+  if(timestamp-lastFrameTime>frameDuration){ playerCurrentFrame=(playerCurrentFrame+1)%playerTotalFrames; lastFrameTime=timestamp; }
+  const sz=getPlayerSize();
+  let frameToUse = (isJumping || player.isFalling) ? 8 : playerCurrentFrame;
+  ctx.drawImage(playerImage,frameToUse*playerFrameWidth,0,playerFrameWidth,playerFrameHeight,player.x,player.y,sz.width,sz.height);
+}
+
+// Use scaled sizes in draws
+function drawZombies(){
+  zombies.forEach(z=>{
+    const zw=z.width*uiScale, zh=z.height*uiScale;
+    ctx.drawImage(zombieImage,z.currentFrame*zombieFrameWidth,0,zombieFrameWidth,zombieFrameHeight,z.x,canvas.height-scaledGroundHeight-zh,zw,zh);
+    z.frameCounter++; if(z.frameCounter%6===0) z.currentFrame=(z.currentFrame+1)%zombieTotalFrames;
+  });
+}
+
+function drawLanterns(){
+  lanterns.forEach(l=>{ const lw=l.width*uiScale, lh=l.height*uiScale; ctx.drawImage(lanternImage, l.x, l.y, lw, lh); });
+}
+
+function drawAmmoPickups(){
+  ctx.fillStyle="gold";
+  ammoPickups.forEach(p=>{ ctx.beginPath(); ctx.arc(p.x,p.y,ammoPickupRadius*uiScale,0,Math.PI*2); ctx.fill(); ctx.strokeStyle="orange"; ctx.stroke(); });
+}
+
+function drawBalls(){ ctx.fillStyle="red"; balls.forEach(b=>{ctx.beginPath();ctx.arc(b.x,b.y,scaledBallRadius,0,Math.PI*2);ctx.fill();}); }
+
+function drawTrees(){
+  trees.forEach(tree=>{
+    const tw=tree.width*uiScale, th=tree.height*uiScale;
+    const ty = canvas.height - scaledGroundHeight - th;
+    ctx.drawImage(treeImages[tree.type], tree.x, ty, tw, th);
+  });
+}
+
+// Adjust ground collisions to scaled sizes
+function updatePlayer(){
+  if (player.isFalling) { player.fallSpeed += 0.5; player.y += player.fallSpeed; if (player.y > canvas.height + getPlayerSize().height) { gameOver = true; sounds.gameBg.pause(); sounds.gameBg.currentTime = 0; } return; }
+  player.y+=player.dy; player.dy+=player.slowFall?player.gravity*0.2:player.gravity;
+  const ph=getPlayerSize().height;
+  if(player.y>=canvas.height-scaledGroundHeight-ph){ player.y=canvas.height-scaledGroundHeight-ph; player.dy=0; player.jumps=0; isJumping=false; } else { isJumping=true; }
+}
+
+// Adjust hole collision baseline and zombie collision to scaled sizes
+function checkCollision(){
+  const sz=getPlayerSize();
+  holes.forEach(h=>{ const px=player.x+sz.width/2; if(px>h.x+10 && px<h.x+h.width-10 && player.y+sz.height>=canvas.height-scaledGroundHeight && !player.isFalling) { player.isFalling=true; player.fallSpeed=0; player.dy=0; playSound('fall'); } });
+  zombies.forEach(z=>{
+    const zh=z.height*uiScale, zw=z.width*uiScale;
+    const playerHitbox={ x: player.x+sz.width*0.2, y: player.y+sz.height*0.1, width: sz.width*0.6, height: sz.height*0.8 };
+    const zombieHitbox={ x: z.x+zw*0.15, y: canvas.height-scaledGroundHeight-zh + zh*0.1, width: zw*0.7, height: zh*0.8 };
+    if(playerHitbox.x < zombieHitbox.x + zombieHitbox.width && playerHitbox.x+playerHitbox.width>zombieHitbox.x && playerHitbox.y<zombieHitbox.y+zombieHitbox.height && playerHitbox.y+playerHitbox.height>zombieHitbox.y && !player.isFalling){ gameOver=true; playSound('gameOver'); sounds.gameBg.pause(); sounds.gameBg.currentTime=0; }
+  });
+}
+
+function checkBallZombieCollision(){
+  for(let i=balls.length-1;i>=0;i--){ for(let j=zombies.length-1;j>=0;j--){ let b=balls[i], z=zombies[j]; const zw=z.width*uiScale, zh=z.height*uiScale; const zombieHitbox={ x:z.x+zw*0.15, y:canvas.height-scaledGroundHeight-zh+zh*0.1, width:zw*0.7, height:zh*0.8 }; if(b.x+scaledBallRadius>zombieHitbox.x && b.x-scaledBallRadius<zombieHitbox.x+zombieHitbox.width && b.y+scaledBallRadius>zombieHitbox.y && b.y-scaledBallRadius<zombieHitbox.y+zombieHitbox.height){ zombies.splice(j,1); balls.splice(i,1); playSound('kill'); break; } } }
+}
+
+// Use uiScale in spawns
+function maybeSpawnTrees(){ nextTreeSpawnDistance-=speed; if(nextTreeSpawnDistance>0) return; const treeCount=Math.floor(Math.random()*3)+1; for(let i=0;i<treeCount;i++){ const treeType=Math.floor(Math.random()*treeImages.length); const treeWidth=200+Math.random()*100; const treeHeight=300+Math.random()*50; const xOffset=i*(treeWidth*0.7); trees.push({ x:canvas.width+xOffset, width:treeWidth, height:treeHeight, type:treeType }); } nextTreeSpawnDistance=randInt(800,1500); }
+
+function maybeSpawnLantern(){ nextLanternSpawnDistance-=speed; if(nextLanternSpawnDistance>0) return; const lanternWidth=40, lanternHeight=60; lanterns.push({ x:canvas.width+50, y:canvas.height-scaledGroundHeight-200, baseY:canvas.height-scaledGroundHeight-200, width:lanternWidth, height:lanternHeight, angle:0 }); nextLanternSpawnDistance=randInt(3000,5000); }
+
+function spawnAmmoPickup(){ ammoPickups.push({ x:canvas.width+50, y:canvas.height-scaledGroundHeight-200, baseY:canvas.height-scaledGroundHeight-200, angle:0 }); }
+
+// Draw credits on end screens
+function gameLoop(timestamp){
+  if(gameOver){ ctx.clearRect(0,0,canvas.width,canvas.height); drawNightSky(); ctx.fillStyle="black"; ctx.font="50px Arial"; ctx.fillText("Game Over!",canvas.width/2-150,canvas.height/2); ctx.font="30px Arial"; ctx.fillText("Press SPACE to Restart",canvas.width/2-180,canvas.height/2+50); drawCredits(); return; }
+  if(gameWon){ ctx.clearRect(0,0,canvas.width,canvas.height); drawNightSky(); drawGround(); ctx.fillStyle="black"; ctx.font="50px Arial"; ctx.fillText("🎉 Congratulations! 🎉", canvas.width/2-200, canvas.height/2-50); ctx.drawImage(homeImage, canvas.width/2-150, canvas.height/2,300,300); drawCredits(); return; }
+  ctx.clearRect(0,0,canvas.width,canvas.height); drawClouds(); drawSunMoon(); drawGround(); drawPlayer(timestamp); drawZombies(); drawTrees(); drawBalls(); drawAmmoPickups(); drawLanterns(); drawScore(); drawIntro(); drawGrass(); holes.forEach(h=>ctx.drawImage(holeImage,h.x,canvas.height-scaledGroundHeight,h.width,scaledGroundHeight)); maybeSpawnObstacle(); maybeSpawnTrees(); maybeSpawnLantern(); updatePlayer(); updateHoles(); updateZombies(); updateBalls(); updateAmmoPickups(); updateLanterns(); updateTrees(); checkCollision(); checkBallZombieCollision(); drawDarkness(); grassOffset+=speed; if(frame%250===0) baseSpeed+=0.2; speed=forwardPressed?baseSpeed*3:baseSpeed; if(frame%600===0) spawnAmmoPickup(); frame++; requestAnimationFrame(gameLoop); }
+
+// ---------------- SOUND SYSTEM ----------------
+const sounds = {
+  jump: new Audio('audio/jump.mp3'),
+  fall: new Audio('audio/fall.mp3'),
+  kill: new Audio('audio/kill.mp3'),
+  gameBg: new Audio('audio/game-bg.mp3'),
+  gameOver: new Audio('audio/gameover.mp3'),
+  happyEnding: new Audio('audio/happy-ending.mp3')
+};
+
+// Sound settings
+let soundEnabled = true;
+let musicEnabled = true;
+
+// Initialize sounds
+function initSounds() {
+  // Set volume levels
+  sounds.jump.volume = 0.4;
+  sounds.fall.volume = 0.5;
+  sounds.kill.volume = 0.4;
+  sounds.gameBg.volume = 0.2; // 50% volume as requested
+  sounds.gameOver.volume = 0.6;
+  sounds.happyEnding.volume = 0.6;
+  
+  // Loop background music
+  sounds.gameBg.loop = true;
+  
+  // Update button text
+  updateMuteButtonText();
+}
+
+// Remove button focus to prevent space key interference
+function removeButtonFocus() {
+  if (document.activeElement && document.activeElement.classList.contains('mute-btn')) {
+    document.activeElement.blur();
+  }
+}
+
+// Add button event listeners after DOM is loaded
+document.addEventListener('DOMContentLoaded', function() {
+  const musicBtn = document.getElementById('musicBtn');
+  const soundBtn = document.getElementById('soundBtn');
+  const fullscreenBtn = document.getElementById('fullscreenBtn');
+  
+  if (musicBtn) {
+    musicBtn.addEventListener('click', function(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      toggleMusic();
+      removeButtonFocus(); // Remove focus after clicking
+    });
+  }
+  
+  if (soundBtn) {
+    soundBtn.addEventListener('click', function(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      toggleSound();
+      removeButtonFocus(); // Remove focus after clicking
+    });
+  }
+  
+  if (fullscreenBtn) {
+    fullscreenBtn.addEventListener('click', function(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      toggleFullscreen();
+      removeButtonFocus(); // Remove focus after clicking
+    });
+  }
+  
+  // Handle window resize
+  window.addEventListener('resize', function() {
+    if (!document.fullscreenElement && !document.webkitFullscreenElement && 
+        !document.mozFullScreenElement && !document.msFullscreenElement) {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    }
+    uiScale = isMobileDevice() ? 2 : 1;
+    ensureMobileControls(); // Ensure mobile controls are created/destroyed on resize
+  });
+});
+
+// Add fullscreen change event listener
+document.addEventListener('fullscreenchange', handleFullscreenChange);
+document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+document.addEventListener('mozfullscreenchange', handleFullscreenChange);
+document.addEventListener('MSFullscreenChange', handleFullscreenChange);
+
+// Handle fullscreen changes
+function handleFullscreenChange() {
+  if (document.fullscreenElement || document.webkitFullscreenElement || 
+      document.mozFullScreenElement || document.msFullscreenElement) {
+    // Entered fullscreen
+    canvas.width = window.screen.width;
+    canvas.height = window.screen.height;
+  } else {
+    // Exited fullscreen
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+  }
+  updateMuteButtonText();
+}
+
+// Draw night sky with stars
+function drawNightSky() {
+  // Draw stars (static positions for now)
+  ctx.fillStyle = "white";
+  const stars = [
+    {x: 100, y: 80, size: 1},
+    {x: 300, y: 120, size: 1.5},
+    {x: 500, y: 90, size: 1},
+    {x: 700, y: 150, size: 2},
+    {x: 900, y: 110, size: 1},
+    {x: 1100, y: 130, size: 1.5},
+    {x: 1300, y: 85, size: 1},
+    {x: 1500, y: 140, size: 1.5},
+    {x: 1700, y: 95, size: 1},
+    {x: 200, y: 200, size: 1},
+    {x: 400, y: 180, size: 1.5},
+    {x: 600, y: 220, size: 1},
+    {x: 800, y: 160, size: 2},
+    {x: 1000, y: 200, size: 1},
+    {x: 1200, y: 170, size: 1.5},
+    {x: 1400, y: 210, size: 1},
+    {x: 1600, y: 185, size: 1.5}
+  ];
+  
+  stars.forEach(star => {
+    ctx.beginPath();
+    ctx.arc(star.x, star.y, star.size, 0, Math.PI * 2);
+    ctx.fill();
+  });
+}
+
+// Play sound function
+function playSound(soundName) {
+  if (soundEnabled && sounds[soundName]) {
+    sounds[soundName].currentTime = 0; // Reset to start
+    sounds[soundName].play().catch(e => console.log('Sound play failed:', e));
+  }
+}
+
+// Toggle sound
+function toggleSound() {
+  soundEnabled = !soundEnabled;
+  updateMuteButtonText();
+  console.log('Sound Effects:', soundEnabled ? 'ON' : 'OFF');
+}
+
+// Toggle music
+function toggleMusic() {
+  musicEnabled = !musicEnabled;
+  if (musicEnabled) {
+    // Only play if game is active and not over/won
+    if (!gameOver && !gameWon) {
+      sounds.gameBg.play().catch(e => console.log('Music play failed:', e));
+    }
+  } else {
+    sounds.gameBg.pause();
+    sounds.happyEnding.pause();
+  }
+  updateMuteButtonText();
+  console.log('Background Music:', musicEnabled ? 'ON' : 'OFF');
+}
+
+// Toggle fullscreen
+function toggleFullscreen() {
+  if (!document.fullscreenElement) {
+    document.documentElement.requestFullscreen().catch(err => {
+      console.log('Fullscreen request failed:', err);
+    });
+  } else {
+    document.exitFullscreen();
+  }
+}
+
+// Update mute button text
+function updateMuteButtonText() {
+  const musicBtn = document.getElementById('musicBtn');
+  const soundBtn = document.getElementById('soundBtn');
+  const fullscreenBtn = document.getElementById('fullscreenBtn');
+  
+  if (musicBtn) musicBtn.textContent = musicEnabled ? 'Music: ON' : 'Music: OFF';
+  if (soundBtn) soundBtn.textContent = soundEnabled ? 'Sound: ON' : 'Sound: OFF';
+  
+  // Update fullscreen button text based on current state
+  if (fullscreenBtn) {
+    fullscreenBtn.textContent = document.fullscreenElement ? 'Exit Fullscreen' : 'Enter Fullscreen';
+  }
+  
+  // Update button classes
+  const musicBtnElement = document.getElementById('musicBtn');
+  const soundBtnElement = document.getElementById('soundBtn');
+  const fullscreenBtnElement = document.getElementById('fullscreenBtn');
+  
+  if (musicBtnElement) musicBtnElement.className = `mute-btn ${musicEnabled ? '' : 'muted'}`;
+  if (soundBtnElement) soundBtnElement.className = `mute-btn ${soundEnabled ? '' : 'muted'}`;
+  if (fullscreenBtnElement) fullscreenBtnElement.className = `mute-btn ${document.fullscreenElement ? 'fullscreen' : ''}`;
+}
+
+// ---------------- GAME LOOP ----------------
+function gameLoop(timestamp){
+  if(gameOver){
+    // Game over screen with night effect
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    drawNightSky(); // Night sky for game over
+    ctx.fillStyle="black"; 
+    ctx.font="50px Arial"; 
+    ctx.fillText("Game Over!",canvas.width/2-150,canvas.height/2); 
+    ctx.font="30px Arial"; 
+    ctx.fillText("Press SPACE to Restart",canvas.width/2-180,canvas.height/2+50); 
+    drawCredits(); // Draw credits on game over screen
+    return;
+  }
+  if(gameWon){
+    // Win screen with night effect
+    ctx.clearRect(0,0,canvas.width,canvas.height); 
+    drawNightSky(); // Night sky for win screen
+    drawGround(); 
+    ctx.fillStyle="black"; 
+    ctx.font="50px Arial"; 
+    ctx.fillText("🎉 Congratulations! 🎉", canvas.width/2-200, canvas.height/2-50); 
+    ctx.drawImage(homeImage, canvas.width/2-150, canvas.height/2,300,300); 
+    drawCredits(); // Draw credits on win screen
+    return;
+  }
+
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  drawClouds(); drawSunMoon(); drawGround(); drawPlayer(timestamp); drawZombies(); drawTrees(); drawBalls(); drawAmmoPickups(); drawLanterns(); drawScore(); drawIntro(); drawGrass(); drawDesktopTip(); // Draw desktop tip
+  
+  // Draw holes on top of everything (including grass)
+  holes.forEach(h=>ctx.drawImage(holeImage,h.x,canvas.height-scaledGroundHeight,h.width,scaledGroundHeight));
+  
+  maybeSpawnObstacle(); maybeSpawnTrees(); maybeSpawnLantern(); updatePlayer(); updateHoles(); updateZombies(); updateBalls(); updateAmmoPickups(); updateLanterns(); updateTrees(); checkCollision(); checkBallZombieCollision(); drawDarkness();
+  
+  // Update grass offset for scrolling effect
+  grassOffset += speed;
+  
+  if(frame%250===0) baseSpeed+=0.2; speed=forwardPressed?baseSpeed*3:baseSpeed; if(frame%600===0) spawnAmmoPickup(); frame++;
+  requestAnimationFrame(gameLoop);
+}
+
+// Desktop-only tip helper
+function drawDesktopTip(){
+  if(isMobileDevice()) return;
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.font = '22px Arial';
+  ctx.fillText('Tip: Press → to run fast', canvas.width/2-140, canvas.height/2-160);
+}
+
+</script>
+<div class="mute-buttons">
+  <button class="mute-btn" id="musicBtn">Music: <span id="musicStatus">ON</span></button>
+  <button class="mute-btn" id="soundBtn">Sound: <span id="soundStatus">ON</span></button>
+  <button class="mute-btn" id="fullscreenBtn">Fullscreen: <span id="fullscreenStatus">Enter</span></button>
+</div>
+</body>
+</html>
